@@ -62,7 +62,7 @@ impl Constructor {
 
                 interval.tick().await;
                 let iron_plate = IronPlate {};
-                println!("Produced iron plate: {iron_plate}!");
+                println!("Produced iron plate: {iron_plate:?}!");
             }
         });
         self.handle = Some(handle);
