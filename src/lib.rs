@@ -1,6 +1,7 @@
 use std::{
     any::{Any, TypeId},
     collections::HashMap,
+    fmt::Debug,
     sync::{Arc, LazyLock},
 };
 
@@ -19,10 +20,13 @@ pub struct ModuleTable {
 }
 
 impl ModuleTable {
-    pub fn publish<Message: 'static + Any + Sized>(&self, message: Message) {
-        let subs = self.subscribers.get(&message.type_id()).unwrap();
-        for sub in subs {
-            sub(&message)
+    pub fn publish<Message: 'static + Any + Sized + Debug>(&self, message: Message) {
+        if let Some(subs) = self.subscribers.get(&message.type_id()) {
+            for sub in subs {
+                sub(&message)
+            }
+        } else {
+            println!("No sub for {message:?}");
         }
     }
 
@@ -50,31 +54,17 @@ impl ModuleTable {
     }
 }
 
-pub trait Publisher<T: 'static> {
-    #[expect(async_fn_in_trait)]
-    async fn publish(message: T) {
-        REGISTRY.read().await.publish(message);
-    }
+pub async fn subscribe<T: Send + Sync + Any>(
+    inner: &Arc<impl Subscriber<T> + Send + Sync + 'static>,
+) {
+    REGISTRY.write().await.register(Arc::clone(inner));
 }
 
-pub trait SubscriberGen {
-    #[expect(async_fn_in_trait)]
-    async fn subscribe<T: 'static + Send + Sync + Any>(
-        sub: Arc<impl 'static + Subscriber<T> + Send + Sync>,
-    ) {
-        sub.inner_subscribe().await;
-    }
+pub async fn publish<T: 'static + Send + Sync + Debug>(message: T) {
+    REGISTRY.read().await.publish(message);
 }
 
 pub trait Subscriber<T: 'static + Send + Sync + Any> {
-    #[expect(async_fn_in_trait)]
-    async fn inner_subscribe(self: &Arc<Self>)
-    where
-        Self: 'static + Send + Sync + Sized,
-    {
-        REGISTRY.write().await.register(Arc::clone(self));
-    }
-
     // WARNING: this method should be short and delegate async to an other work/task/whatever
     // otherwise this would block the publishing mecanismn, making other modules wait and loosing
     // the lovely benefit of async programming.
