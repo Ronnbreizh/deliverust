@@ -3,9 +3,14 @@ use std::{
     collections::HashMap,
     fmt::Debug,
     sync::{Arc, LazyLock},
+    time::Instant,
 };
 
 use tokio::sync::RwLock as TokioRwLock;
+
+use crate::observer::ObserverBehavior;
+
+pub mod observer;
 
 type AnyCallback = Box<dyn Fn(&dyn Any) + Send + Sync>;
 
@@ -17,17 +22,29 @@ static REGISTRY: LazyLock<TokioRwLock<ModuleTable>> =
 ///
 pub struct ModuleTable {
     subscribers: HashMap<TypeId, Vec<AnyCallback>>,
+    observer: Option<Box<dyn ObserverBehavior>>,
 }
 
 impl ModuleTable {
-    pub fn publish<Message: 'static + Any + Sized + Debug>(&self, message: Message) {
-        if let Some(subs) = self.subscribers.get(&message.type_id()) {
-            for sub in subs {
-                sub(&message)
-            }
-        } else {
-            println!("No sub for {message:?}");
+    fn observer_wrapper(&self, cb: impl Fn(&Self)) {
+        let begin = Instant::now();
+
+        cb(self);
+
+        if let Some(observer) = &self.observer {
+            let duration = Instant::now().duration_since(begin);
+            observer.increase_lock_duration(duration);
         }
+    }
+
+    pub fn publish<Message: 'static + Any + Sized + Debug>(&self, message: Message) {
+        self.observer_wrapper(|me| {
+            if let Some(subs) = me.subscribers.get(&message.type_id()) {
+                for sub in subs {
+                    sub(&message)
+                }
+            }
+        });
     }
 
     pub fn register<
@@ -37,8 +54,9 @@ impl ModuleTable {
         &mut self,
         subscriber: Arc<Sub>,
     ) {
-        let type_id = TypeId::of::<Message>();
+        let begin = Instant::now();
 
+        let type_id = TypeId::of::<Message>();
         let callback = Box::new(move |message: &dyn Any| {
             let message = message.downcast_ref::<Message>().unwrap(); // <- message is
             // WARNING: if the handle is blocking/taking long, then the publisher is drastically
@@ -51,6 +69,11 @@ impl ModuleTable {
         } else {
             self.subscribers.insert(type_id, vec![callback]);
         }
+
+        if let Some(observer) = &self.observer {
+            let duration = Instant::now().duration_since(begin);
+            observer.increase_lock_duration(duration);
+        }
     }
 }
 
@@ -62,6 +85,16 @@ pub async fn subscribe<T: Send + Sync + Any>(
 
 pub async fn publish<T: 'static + Send + Sync + Debug>(message: T) {
     REGISTRY.read().await.publish(message);
+}
+
+pub async fn register_observer(observer: impl ObserverBehavior) {
+    REGISTRY.write().await.observer = Some(Box::new(observer));
+}
+
+pub async fn evaluate(cb: impl AsyncFn(&Box<dyn ObserverBehavior>)) {
+    if let Some(observer) = &REGISTRY.read().await.observer {
+        cb(observer).await;
+    }
 }
 
 pub trait Subscriber<T: 'static + Send + Sync + Any> {
