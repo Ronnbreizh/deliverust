@@ -8,7 +8,11 @@ use std::{
 /// `Observer` are used to monitor the `REGISTRY` health and the message usage.
 pub trait ObserverBehavior: 'static + Send + Sync {
     /// What should be done on new message
-    fn register_incoming(&self, type_id: TypeId);
+    fn register_type(&mut self, type_id: TypeId);
+    /// What should be done on new message
+    fn increment_type(&self, type_id: TypeId);
+    /// Return the number of messages of a given type
+    fn count_message(&self, type_id: &TypeId) -> usize;
 
     /// Increase lock duration by duration in nanos
     fn increase_lock_duration(&self, duration: Duration);
@@ -38,10 +42,21 @@ impl Default for Observer {
 }
 
 impl ObserverBehavior for Observer {
-    fn register_incoming(&self, type_id: TypeId) {
+    fn register_type(&mut self, type_id: TypeId) {
+        self.counter.insert(type_id, AtomicUsize::new(0));
+    }
+
+    fn increment_type(&self, type_id: TypeId) {
         if let Some(value) = self.counter.get(&type_id) {
             value.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         }
+    }
+
+    fn count_message(&self, type_id: &TypeId) -> usize {
+        self.counter
+            .get(type_id)
+            .map(|atomic| atomic.load(std::sync::atomic::Ordering::Relaxed))
+            .unwrap_or_default()
     }
 
     fn lock_duration(&self) -> u8 {
@@ -66,7 +81,7 @@ impl ObserverBehavior for Observer {
 
 #[cfg(test)]
 mod tests {
-    use std::{sync::Arc, time::Duration};
+    use std::{any::TypeId, sync::Arc, time::Duration};
 
     use crate::{
         Subscriber, evaluate,
@@ -77,12 +92,18 @@ mod tests {
     #[derive(Debug)]
     struct SlowHandler {}
     #[derive(Debug)]
+    struct FastHandler {}
+    #[derive(Debug)]
     struct Message {}
 
     impl Subscriber<Message> for SlowHandler {
         fn handle(&self, _message: &Message) {
             std::thread::sleep(Duration::from_secs(1));
         }
+    }
+
+    impl Subscriber<Message> for FastHandler {
+        fn handle(&self, _message: &Message) {}
     }
 
     #[test]
@@ -96,6 +117,24 @@ mod tests {
         let observer = Observer::default();
         observer.increase_lock_duration(Duration::from_secs(1));
         assert!(observer.lock_duration() > 99);
+    }
+
+    #[tokio::test]
+    async fn count_message() {
+        let (channel_tx, mut channel_rx) = tokio::sync::mpsc::channel(1);
+        let fast_handler = Arc::new(FastHandler {});
+        subscribe(&fast_handler).await;
+        publish(Message {}).await;
+
+        evaluate(async move |obs| {
+            let load_rate = obs.count_message(&TypeId::of::<Message>());
+            channel_tx.send(load_rate).await.unwrap();
+        })
+        .await;
+
+        let message_count = channel_rx.recv().await.unwrap();
+        assert_eq!(message_count, 1);
+        publish(Message {}).await;
     }
 
     #[tokio::test]
