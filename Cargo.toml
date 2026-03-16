@@ -1,7 +1,11 @@
 [package]
 name = "deliverust"
+authors = ["ronnbreizh@gmail.com"]
 version = "0.1.0"
 edition = "2024"
+license = "LICENSE"
+description = "Easy to use and lightweight async pubsub context"
+keywords = ["pubsub", "async", "tokio"]
 
 [dependencies]
 tokio = { version = "1.50.0", features = ["sync"] }
