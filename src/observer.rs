@@ -84,9 +84,9 @@ mod tests {
     use std::{any::TypeId, sync::Arc, time::Duration};
 
     use crate::{
-        Subscriber, evaluate,
+        Subscriber, evaluate_inner,
         observer::{Observer, ObserverBehavior},
-        publish, register_observer, subscribe,
+        publish_inner, subscribe_inner,
     };
 
     #[derive(Debug)]
@@ -121,12 +121,15 @@ mod tests {
 
     #[tokio::test]
     async fn count_message() {
-        let (channel_tx, mut channel_rx) = tokio::sync::mpsc::channel(1);
-        let fast_handler = Arc::new(FastHandler {});
-        subscribe(&fast_handler).await;
-        publish(Message {}).await;
+        let registry = crate::create_registry_with_observer().await;
 
-        evaluate(async move |obs| {
+        let (channel_tx, mut channel_rx) = tokio::sync::mpsc::channel(10);
+        let channel_tx_clone = channel_tx.clone();
+        let fast_handler = Arc::new(FastHandler {});
+        subscribe_inner(&registry, &fast_handler).await;
+        publish_inner(&registry, Message {}).await;
+
+        evaluate_inner(&registry, async move |obs| {
             let load_rate = obs.count_message(&TypeId::of::<Message>());
             channel_tx.send(load_rate).await.unwrap();
         })
@@ -134,20 +137,31 @@ mod tests {
 
         let message_count = channel_rx.recv().await.unwrap();
         assert_eq!(message_count, 1);
-        publish(Message {}).await;
+
+        publish_inner(&registry, Message {}).await;
+        publish_inner(&registry, Message {}).await;
+        publish_inner(&registry, Message {}).await;
+
+        evaluate_inner(&registry, async move |obs| {
+            let load_rate = obs.count_message(&TypeId::of::<Message>());
+            channel_tx_clone.send(load_rate).await.unwrap();
+        })
+        .await;
+
+        let message_count = channel_rx.recv().await.unwrap();
+        assert_eq!(message_count, 4);
     }
 
     #[tokio::test]
     async fn long_lock() {
-        let (channel_tx, mut channel_rx) = tokio::sync::mpsc::channel(1);
+        let registry = crate::create_registry_with_observer().await;
 
+        let (channel_tx, mut channel_rx) = tokio::sync::mpsc::channel(10);
         let slow_handler = Arc::new(SlowHandler {});
-        subscribe(&slow_handler).await;
+        subscribe_inner(&registry, &slow_handler).await;
+        publish_inner(&registry, Message {}).await;
 
-        register_observer(Observer::default()).await;
-        publish(Message {}).await;
-
-        evaluate(async move |obs| {
+        evaluate_inner(&registry, async move |obs| {
             let load_rate = obs.lock_duration();
             channel_tx.send(load_rate).await.unwrap();
         })

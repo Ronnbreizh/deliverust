@@ -45,6 +45,9 @@ impl ModuleTable {
                 }
             }
         });
+        if let Some(observer) = &self.observer {
+            observer.increment_type(TypeId::of::<Message>());
+        }
     }
 
     pub fn register<
@@ -67,7 +70,12 @@ impl ModuleTable {
         if let Some(subs) = self.subscribers.get_mut(&type_id) {
             subs.push(callback);
         } else {
+            // New kind of subscriber, yay
             self.subscribers.insert(type_id, vec![callback]);
+        }
+
+        if let Some(observer) = &mut self.observer {
+            observer.register_type(type_id);
         }
 
         if let Some(observer) = &self.observer {
@@ -77,22 +85,51 @@ impl ModuleTable {
     }
 }
 
+pub(crate) async fn subscribe_inner<T: Send + Sync + Any>(
+    registry: &TokioRwLock<ModuleTable>,
+    inner: &Arc<impl Subscriber<T> + Send + Sync + 'static>,
+) {
+    registry.write().await.register(Arc::clone(inner));
+}
+
+/// Register the given type to a kind of messages.
 pub async fn subscribe<T: Send + Sync + Any>(
     inner: &Arc<impl Subscriber<T> + Send + Sync + 'static>,
 ) {
-    REGISTRY.write().await.register(Arc::clone(inner));
+    subscribe_inner(&REGISTRY, inner).await;
 }
 
 pub async fn publish<T: 'static + Send + Sync + Debug>(message: T) {
-    REGISTRY.read().await.publish(message);
+    publish_inner(&REGISTRY, message).await;
+}
+pub(crate) async fn publish_inner<T: 'static + Send + Sync + Debug>(
+    registry: &TokioRwLock<ModuleTable>,
+    message: T,
+) {
+    registry.read().await.publish(message);
 }
 
+/// Register an `ObserverBehavior` to follow the ModuleTable load
 pub async fn register_observer(observer: impl ObserverBehavior) {
-    REGISTRY.write().await.observer = Some(Box::new(observer));
+    register_observer_inner(&REGISTRY, observer).await;
+}
+
+pub(crate) async fn register_observer_inner(
+    registry: &TokioRwLock<ModuleTable>,
+    observer: impl ObserverBehavior,
+) {
+    registry.write().await.observer = Some(Box::new(observer));
 }
 
 pub async fn evaluate(cb: impl AsyncFn(&Box<dyn ObserverBehavior>)) {
-    if let Some(observer) = &REGISTRY.read().await.observer {
+    evaluate_inner(&REGISTRY, cb).await;
+}
+
+pub async fn evaluate_inner(
+    registry: &TokioRwLock<ModuleTable>,
+    cb: impl AsyncFn(&Box<dyn ObserverBehavior>),
+) {
+    if let Some(observer) = &registry.read().await.observer {
         cb(observer).await;
     }
 }
@@ -103,4 +140,11 @@ pub trait Subscriber<T: 'static + Send + Sync + Any> {
     // the lovely benefit of async programming.
     // Also you can deadlock if you subscribe directly inside this function.
     fn handle(&self, _message: &T);
+}
+
+#[cfg(test)]
+pub(crate) async fn create_registry_with_observer() -> TokioRwLock<ModuleTable> {
+    let registry = TokioRwLock::new(ModuleTable::default());
+    register_observer_inner(&registry, observer::Observer::default()).await;
+    registry
 }
