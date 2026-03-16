@@ -3,7 +3,7 @@ name = "deliverust"
 authors = ["ronnbreizh@gmail.com"]
 version = "0.1.0"
 edition = "2024"
-license = "LICENSE"
+license = "MIT"
 description = "Easy to use and lightweight async pubsub context"
 keywords = ["pubsub", "async", "tokio"]
 
