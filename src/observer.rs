@@ -13,7 +13,6 @@ pub trait ObserverBehavior: 'static + Send + Sync {
     fn increment_type(&self, type_id: TypeId);
     /// Return the number of messages of a given type
     fn count_message(&self, type_id: &TypeId) -> usize;
-
     /// Increase lock duration by duration in nanos
     fn increase_lock_duration(&self, duration: Duration);
 

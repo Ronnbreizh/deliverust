@@ -8,12 +8,11 @@ description = "Easy to use and lightweight async pubsub context"
 keywords = ["pubsub", "async", "tokio"]
 
 [dependencies]
-tokio = { version = "1.50.0", features = ["sync"] }
-
-[dev-dependencies]
+async-trait = "0.1.89"
 tokio = { version = "1.50.0", features = [
   "macros",
   "rt-multi-thread",
   "signal",
   "time",
+  "sync",
 ] }

@@ -8,14 +8,22 @@ use std::{
 
 use tokio::sync::RwLock as TokioRwLock;
 
-use crate::observer::ObserverBehavior;
+use crate::{async_module_table::AsyncModuleTable, observer::ObserverBehavior};
 
+/// We expose async_trait for conveniences for users of the crate.
+pub use async_trait::async_trait as deliverust_async_trait;
+pub mod async_module_table;
 pub mod observer;
+pub mod subscriber;
+pub use subscriber::Subscriber;
 
 type AnyCallback = Box<dyn Fn(&dyn Any) + Send + Sync>;
 
 static REGISTRY: LazyLock<TokioRwLock<ModuleTable>> =
     LazyLock::new(|| TokioRwLock::new(ModuleTable::default()));
+
+static ASYNC_REGISTRY: LazyLock<TokioRwLock<AsyncModuleTable>> =
+    LazyLock::new(|| TokioRwLock::new(AsyncModuleTable::default()));
 
 #[derive(Default)]
 /// Core registry of all the modules.
@@ -50,6 +58,7 @@ impl ModuleTable {
         }
     }
 
+    /// Add a subscriber
     pub fn register<
         Message: 'static + Send + Sync + Any,
         Sub: 'static + Subscriber<Message> + Send + Sync,
@@ -58,7 +67,6 @@ impl ModuleTable {
         subscriber: Arc<Sub>,
     ) {
         let begin = Instant::now();
-
         let type_id = TypeId::of::<Message>();
         let callback = Box::new(move |message: &dyn Any| {
             let message = message.downcast_ref::<Message>().unwrap(); // <- message is
@@ -99,6 +107,20 @@ pub async fn subscribe<T: Send + Sync + Any>(
     subscribe_inner(&REGISTRY, inner).await;
 }
 
+pub(crate) async fn async_subscribe_inner<T: Send + Sync + Any>(
+    registry: &TokioRwLock<AsyncModuleTable>,
+    inner: &Arc<impl Subscriber<T> + Send + Sync + Any + 'static>,
+) {
+    registry.write().await.add_subcriber(inner).await;
+}
+
+/// Register the given type to a kind of messages.
+pub async fn async_subscribe<T: Send + Sync + Any>(
+    inner: &Arc<impl Subscriber<T> + Send + Sync + 'static>,
+) {
+    async_subscribe_inner(&ASYNC_REGISTRY, inner).await;
+}
+
 pub async fn publish<T: 'static + Send + Sync + Debug>(message: T) {
     publish_inner(&REGISTRY, message).await;
 }
@@ -107,6 +129,16 @@ pub(crate) async fn publish_inner<T: 'static + Send + Sync + Debug>(
     message: T,
 ) {
     registry.read().await.publish(message);
+}
+
+pub async fn async_publish<T: 'static + Send + Sync + Debug>(message: T) {
+    async_publish_inner(&ASYNC_REGISTRY, message).await;
+}
+pub(crate) async fn async_publish_inner<T: 'static + Send + Sync + Debug>(
+    registry: &TokioRwLock<AsyncModuleTable>,
+    message: T,
+) {
+    registry.read().await.publish(message).await;
 }
 
 /// Register an `ObserverBehavior` to follow the ModuleTable load
@@ -132,14 +164,6 @@ pub async fn evaluate_inner(
     if let Some(observer) = &registry.read().await.observer {
         cb(observer).await;
     }
-}
-
-pub trait Subscriber<T: 'static + Send + Sync + Any> {
-    // WARNING: this method should be short and delegate async to an other work/task/whatever
-    // otherwise this would block the publishing mecanismn, making other modules wait and loosing
-    // the lovely benefit of async programming.
-    // Also you can deadlock if you subscribe directly inside this function.
-    fn handle(&self, _message: &T);
 }
 
 #[cfg(test)]
